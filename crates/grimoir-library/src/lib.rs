@@ -421,6 +421,19 @@ impl Library {
         Ok(())
     }
 
+    pub fn remove_books_from_collection(&self, book_ids: &[i64], collection_id: i64) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for book_id in book_ids {
+            tx.execute(
+                "DELETE FROM book_collections WHERE book_id = ?1 AND collection_id = ?2",
+                params![book_id, collection_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Removes books from the library database only. The source files are
     /// never touched; this is the basis of Grimoir's read-only file policy.
     pub fn remove_books(&self, book_ids: &[i64]) -> Result<()> {

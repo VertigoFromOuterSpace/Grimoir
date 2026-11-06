@@ -96,6 +96,7 @@ struct LibraryState {
     selection_count: gtk::Label,
     selection_favorite: gtk::Button,
     selection_collection: gtk::Button,
+    selection_collection_remove: gtk::Button,
     selection_remove: gtk::Button,
     nav_buttons: RefCell<Vec<(Section, gtk::Button)>>,
     cover_cache: RefCell<HashMap<i64, gdk::Texture>>,
@@ -313,6 +314,10 @@ impl LibraryWindow {
         let selection_collection = gtk::Button::with_label("Add to collection");
         selection_collection.add_css_class("selection-action");
         selection_bar.append(&selection_collection);
+        let selection_collection_remove = gtk::Button::with_label("Remove from collection");
+        selection_collection_remove.add_css_class("selection-action");
+        selection_collection_remove.set_visible(false);
+        selection_bar.append(&selection_collection_remove);
         let selection_remove = gtk::Button::with_label("Remove");
         selection_remove.add_css_class("selection-action");
         selection_remove.add_css_class("danger");
@@ -355,6 +360,7 @@ impl LibraryWindow {
             selection_count: selection_count.clone(),
             selection_favorite: selection_favorite.clone(),
             selection_collection: selection_collection.clone(),
+            selection_collection_remove: selection_collection_remove.clone(),
             selection_remove: selection_remove.clone(),
             nav_buttons: RefCell::new(Vec::new()),
             scanning: Cell::new(false),
@@ -522,6 +528,33 @@ impl LibraryWindow {
                     return;
                 }
                 show_collection_picker(&state, ids);
+            });
+        }
+
+        {
+            let state = state.clone();
+            selection_collection_remove.connect_clicked(move |_| {
+                let ids: Vec<i64> = state.selected.borrow().iter().copied().collect();
+                let Section::Collection(collection_id, _) = &*state.section.borrow() else {
+                    return;
+                };
+                let collection_id = *collection_id;
+                if ids.is_empty() {
+                    return;
+                }
+                if let Err(error) = state
+                    .library
+                    .remove_books_from_collection(&ids, collection_id)
+                {
+                    state.status_label.set_text(&format!("{error:#}"));
+                    return;
+                }
+                state.selected.borrow_mut().clear();
+                state.selection_mode.set(false);
+                state.last_signature.borrow_mut().clear();
+                refresh(&state);
+                update_selection_bar(&state);
+                state.status_label.set_text("Removed from collection");
             });
         }
 
@@ -1398,6 +1431,35 @@ fn book_card(state: &Rc<LibraryState>, book: &Book, index: usize) -> gtk::Overla
     });
     menu_box.append(&add_to_collection);
 
+    if let Section::Collection(collection_id, _) = &*state.section.borrow() {
+        let collection_id = *collection_id;
+        let remove_from_collection = gtk::Button::with_label("Remove from collection");
+        remove_from_collection.add_css_class("library-menu-item");
+        remove_from_collection.set_halign(gtk::Align::Fill);
+        if let Some(label) = remove_from_collection.child().and_downcast::<gtk::Label>() {
+            label.set_xalign(0.0);
+        }
+        remove_from_collection.connect_clicked({
+            let state = state.clone();
+            let book_id = book.id;
+            let popover = popover.clone();
+            move |_| {
+                popover.popdown();
+                if let Err(error) = state
+                    .library
+                    .remove_books_from_collection(&[book_id], collection_id)
+                {
+                    state.status_label.set_text(&format!("{error:#}"));
+                    return;
+                }
+                state.last_signature.borrow_mut().clear();
+                refresh(&state);
+                state.status_label.set_text("Removed from collection");
+            }
+        });
+        menu_box.append(&remove_from_collection);
+    }
+
     let select_book = gtk::Button::with_label("Select book");
     select_book.add_css_class("library-menu-item");
     select_book.set_halign(gtk::Align::Fill);
@@ -1583,6 +1645,9 @@ fn update_selection_bar(state: &Rc<LibraryState>) {
     ));
     state.selection_favorite.set_sensitive(count > 0);
     state.selection_collection.set_sensitive(count > 0);
+    let in_collection = matches!(&*state.section.borrow(), Section::Collection(..));
+    state.selection_collection_remove.set_visible(in_collection);
+    state.selection_collection_remove.set_sensitive(count > 0);
     state.selection_remove.set_sensitive(count > 0);
 }
 
