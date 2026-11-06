@@ -933,6 +933,42 @@ window.book-dialog {{
   margin-top: 2px;
 }}
 
+.collection-stage {{
+  background-color: {bar_bg};
+  border: 1px solid {bar_border};
+  border-radius: 10px;
+  box-shadow: 0 10px 24px {cover_shadow};
+}}
+
+.collection-card:hover .collection-stage {{
+  border-color: {accent};
+}}
+
+.collection-cover {{
+  border: 1px solid {cover_edge};
+  border-radius: 4px;
+  box-shadow: 0 4px 12px {cover_shadow};
+}}
+
+.collection-tab {{
+  background-color: {accent_soft};
+  color: {accent};
+  border-radius: 8px 0 6px 0;
+  padding: 2px 7px;
+  font-size: 8pt;
+  font-weight: bold;
+  letter-spacing: 1px;
+}}
+
+.collection-count {{
+  background-color: {bar_bg};
+  border: 1px solid {bar_border};
+  border-radius: 4px;
+  color: {text_muted};
+  font-size: 8pt;
+  padding: 2px 5px;
+}}
+
 .showcase-title {{
   color: {text};
   font-weight: bold;

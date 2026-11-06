@@ -30,6 +30,20 @@ enum Section {
     Collection(i64, String),
 }
 
+#[derive(Clone)]
+struct CollectionCard {
+    id: i64,
+    name: String,
+    count: usize,
+    covers: Vec<PathBuf>,
+}
+
+#[derive(Clone)]
+enum CatalogItem {
+    Book(Box<Book>),
+    Collection(CollectionCard),
+}
+
 pub struct LibraryWindow {
     window: gtk::ApplicationWindow,
     _state: Rc<LibraryState>,
@@ -66,6 +80,7 @@ struct LibraryState {
     series_nav: gtk::Box,
     folder_nav: gtk::Box,
     collection_nav: gtk::Box,
+    back_button: gtk::Button,
     selection_mode: Cell<bool>,
     selected: RefCell<HashSet<i64>>,
     selection_bar: gtk::Box,
@@ -151,6 +166,12 @@ impl LibraryWindow {
         topbar.set_margin_top(16);
         topbar.set_margin_start(18);
         topbar.set_margin_end(18);
+
+        let back_button = gtk::Button::from_icon_name("go-previous-symbolic");
+        back_button.add_css_class("library-icon");
+        back_button.set_tooltip_text(Some("Back to all books"));
+        back_button.set_visible(false);
+        topbar.append(&back_button);
 
         let brand = gtk::Label::new(Some("GRIMOIR"));
         brand.add_css_class("library-brand");
@@ -309,6 +330,7 @@ impl LibraryWindow {
             series_nav: series_nav.clone(),
             folder_nav: folder_nav.clone(),
             collection_nav: collection_nav.clone(),
+            back_button: back_button.clone(),
             selection_mode: Cell::new(false),
             selected: RefCell::new(HashSet::new()),
             selection_bar: selection_bar.clone(),
@@ -350,7 +372,7 @@ impl LibraryWindow {
                 let Some(object) = item.item().and_downcast::<glib::BoxedAnyObject>() else {
                     return;
                 };
-                let book = object.borrow::<Book>();
+                let catalog_item = object.borrow::<CatalogItem>();
                 let index = item.position() as usize;
                 let Some(host) = item.child().and_downcast::<gtk::Box>() else {
                     return;
@@ -358,7 +380,14 @@ impl LibraryWindow {
                 while let Some(child) = host.first_child() {
                     host.remove(&child);
                 }
-                let card = book_card(&state, &book, index);
+                let card = match &*catalog_item {
+                    CatalogItem::Book(book) => {
+                        book_card(&state, book, index).upcast::<gtk::Widget>()
+                    }
+                    CatalogItem::Collection(collection) => {
+                        collection_card(&state, collection).upcast::<gtk::Widget>()
+                    }
+                };
                 host.append(&card);
             }
         });
@@ -437,6 +466,17 @@ impl LibraryWindow {
             let state = state.clone();
             new_collection_top.connect_clicked(move |_| {
                 prompt_new_collection(&state, None);
+            });
+        }
+
+        {
+            let state = state.clone();
+            back_button.connect_clicked(move |_| {
+                *state.section.borrow_mut() = Section::All;
+                state.query.borrow_mut().clear();
+                state.last_signature.borrow_mut().clear();
+                update_nav_active(&state);
+                refresh(&state);
             });
         }
 
@@ -761,19 +801,70 @@ fn refresh(state: &Rc<LibraryState>) {
         ),
         _ => None,
     };
+
+    let collections = state.library.collections().unwrap_or_default();
+    let in_all = matches!(section, Section::All);
+    let mut collected_ids = HashSet::new();
+    let mut collection_cards = Vec::new();
+    if in_all {
+        for collection in &collections {
+            let ids = state
+                .library
+                .book_ids_in_collection(collection.id)
+                .unwrap_or_default();
+            collected_ids.extend(ids.iter().copied());
+            let members = ids
+                .iter()
+                .filter_map(|id| books.iter().find(|book| book.id == *id))
+                .collect::<Vec<_>>();
+            let matches = query.is_empty()
+                || collection.name.to_lowercase().contains(&query)
+                || members.iter().any(|book| book_matches(book, &query));
+            if !matches {
+                continue;
+            }
+            let covers = members
+                .iter()
+                .filter_map(|book| book.cover_path.clone())
+                .take(3)
+                .collect::<Vec<_>>();
+            collection_cards.push(CollectionCard {
+                id: collection.id,
+                name: collection.name.clone(),
+                count: members.len(),
+                covers,
+            });
+        }
+    }
+
     let mut visible = books
         .iter()
         .filter(|book| section_matches(book, &section, collection_books.as_ref()))
+        .filter(|book| !(in_all && collected_ids.contains(&book.id)))
         .filter(|book| query.is_empty() || book_matches(book, &query))
         .cloned()
         .collect::<Vec<_>>();
 
     sort_books(&mut visible, &section);
 
-    state.count_label.set_text(&match visible.len() {
-        1 => "1 book".to_owned(),
-        count => format!("{count} books"),
-    });
+    let count_text = if in_all && !collections.is_empty() {
+        format!(
+            "{} book{} · {} collection{}",
+            visible.len(),
+            if visible.len() == 1 { "" } else { "s" },
+            collection_cards.len(),
+            if collection_cards.len() == 1 { "" } else { "s" }
+        )
+    } else {
+        match visible.len() {
+            1 => "1 book".to_owned(),
+            count => format!("{count} books"),
+        }
+    };
+    state.count_label.set_text(&count_text);
+    state
+        .back_button
+        .set_visible(matches!(section, Section::Collection(..)));
 
     let roots = state
         .library
@@ -800,7 +891,24 @@ fn refresh(state: &Rc<LibraryState>) {
         })
         .collect::<Vec<_>>()
         .join("|");
-    let signature = format!("{roots}::{cards}");
+    let folders = collection_cards
+        .iter()
+        .map(|card| {
+            format!(
+                "{}:{}:{}:{}",
+                card.id,
+                card.name,
+                card.count,
+                card.covers
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("|");
+    let signature = format!("{roots}::{cards}::{folders}");
 
     if *state.last_signature.borrow() == signature {
         state.books.replace(books);
@@ -810,15 +918,27 @@ fn refresh(state: &Rc<LibraryState>) {
     *state.last_signature.borrow_mut() = signature;
 
     state.store.remove_all();
+    for collection in &collection_cards {
+        state
+            .store
+            .append(&glib::BoxedAnyObject::new(CatalogItem::Collection(
+                collection.clone(),
+            )));
+    }
     for book in &visible {
-        state.store.append(&glib::BoxedAnyObject::new(book.clone()));
+        state
+            .store
+            .append(&glib::BoxedAnyObject::new(CatalogItem::Book(Box::new(
+                book.clone(),
+            ))));
     }
 
     while let Some(child) = state.empty_state.first_child() {
         state.empty_state.remove(&child);
     }
-    state.empty_state.set_visible(visible.is_empty());
-    if visible.is_empty() {
+    let is_empty = visible.is_empty() && collection_cards.is_empty();
+    state.empty_state.set_visible(is_empty);
+    if is_empty {
         let has_roots = !state.library.roots().unwrap_or_default().is_empty();
         let title = gtk::Label::new(Some(if has_roots {
             "No books match this view."
@@ -973,6 +1093,9 @@ fn refresh_nav(state: &Rc<LibraryState>) {
                 if let Err(error) = state.library.delete_collection(id) {
                     state.status_label.set_text(&format!("{error:#}"));
                     return;
+                }
+                if matches!(&*state.section.borrow(), Section::Collection(current, _) if *current == id) {
+                    *state.section.borrow_mut() = Section::All;
                 }
                 state.nav_signature.borrow_mut().clear();
                 state.last_signature.borrow_mut().clear();
@@ -1313,8 +1436,13 @@ fn prompt_new_collection(state: &Rc<LibraryState>, after_ids: Option<Vec<i64>>) 
                 }
                 state.nav_signature.borrow_mut().clear();
                 state.last_signature.borrow_mut().clear();
+                if after_ids.is_some() {
+                    state.selection_mode.set(false);
+                    state.selected.borrow_mut().clear();
+                }
                 refresh_nav(state);
                 refresh(state);
+                update_selection_bar(state);
                 state.status_label.set_text("Collection created");
             }
             Err(error) => state.status_label.set_text(&format!("{error:#}")),
@@ -1370,6 +1498,11 @@ fn show_collection_picker(state: &Rc<LibraryState>, book_ids: Vec<i64>) {
                     return;
                 }
                 window.close();
+                state.selection_mode.set(false);
+                state.selected.borrow_mut().clear();
+                state.last_signature.borrow_mut().clear();
+                refresh(&state);
+                update_selection_bar(&state);
                 state.status_label.set_text("Added to collection");
             }
         });
@@ -1457,6 +1590,108 @@ fn confirm_remove_books(state: &Rc<LibraryState>, ids: Vec<i64>) {
         }
     });
     dialog.present();
+}
+
+fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk::Button {
+    let card = gtk::Button::new();
+    card.add_css_class("showcase-card");
+    card.add_css_class("collection-card");
+    card.set_size_request(224, 372);
+    card.set_halign(gtk::Align::Center);
+    card.set_overflow(gtk::Overflow::Visible);
+    card.set_margin_start(10);
+    card.set_margin_end(10);
+    card.set_margin_top(10);
+    card.set_margin_bottom(16);
+
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 7);
+    content.set_halign(gtk::Align::Center);
+
+    let stage = gtk::Overlay::new();
+    stage.add_css_class("collection-stage");
+    stage.set_size_request(172, 258);
+    stage.set_halign(gtk::Align::Center);
+    stage.set_valign(gtk::Align::Start);
+
+    let preview = gtk::Fixed::new();
+    preview.set_hexpand(true);
+    preview.set_vexpand(true);
+    if collection.covers.is_empty() {
+        let empty = gtk::Label::new(Some("Empty collection"));
+        empty.add_css_class("library-empty-muted");
+        empty.set_halign(gtk::Align::Center);
+        empty.set_valign(gtk::Align::Center);
+        preview.put(&empty, 18.0, 110.0);
+    } else {
+        for (index, path) in collection.covers.iter().take(3).enumerate() {
+            let picture = gtk::Picture::new();
+            picture.add_css_class("collection-cover");
+            picture.set_content_fit(gtk::ContentFit::Cover);
+            picture.set_can_shrink(true);
+            picture.set_size_request(92, 132);
+            if let Ok(texture) = gdk::Texture::from_filename(path) {
+                picture.set_paintable(Some(&texture));
+            }
+            preview.put(
+                &picture,
+                6.0 + index as f64 * 31.0,
+                44.0 - index as f64 * 8.0,
+            );
+        }
+    }
+    stage.set_child(Some(&preview));
+
+    let tab = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    tab.add_css_class("collection-tab");
+    tab.set_halign(gtk::Align::Start);
+    tab.set_valign(gtk::Align::Start);
+    tab.append(&gtk::Image::from_icon_name("folder-symbolic"));
+    tab.append(&gtk::Label::new(Some("COLLECTION")));
+    stage.add_overlay(&tab);
+
+    let count = gtk::Label::new(Some(&format!(
+        "{} book{}",
+        collection.count,
+        if collection.count == 1 { "" } else { "s" }
+    )));
+    count.add_css_class("collection-count");
+    count.set_halign(gtk::Align::End);
+    count.set_valign(gtk::Align::End);
+    count.set_margin_end(10);
+    count.set_margin_bottom(8);
+    stage.add_overlay(&count);
+
+    content.append(&stage);
+
+    let title = gtk::Label::new(Some(&collection.name));
+    title.add_css_class("showcase-title");
+    title.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title.set_justify(gtk::Justification::Center);
+    title.set_lines(2);
+    title.set_xalign(0.5);
+    title.set_max_width_chars(24);
+    content.append(&title);
+
+    let muted = gtk::Label::new(Some("Collection"));
+    muted.add_css_class("showcase-muted");
+    muted.set_xalign(0.5);
+    content.append(&muted);
+    card.set_child(Some(&content));
+
+    card.connect_clicked({
+        let state = state.clone();
+        let id = collection.id;
+        let name = collection.name.clone();
+        move |_| {
+            *state.section.borrow_mut() = Section::Collection(id, name.clone());
+            state.query.borrow_mut().clear();
+            state.last_signature.borrow_mut().clear();
+            update_nav_active(&state);
+            refresh(&state);
+        }
+    });
+
+    card
 }
 
 fn open_book(state: &Rc<LibraryState>, book: &Book) {
