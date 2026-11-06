@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "name": "Grimoir Example",
+  "mode": "dark",
+  "colors": {
+    "bg": "#080d0b",
+    "surface": "#121a15",
+    "surface_alt": "#1a241d",
+    "text": "#dce9dd",
+    "text_muted": "#9aa89c",
+    "accent": "#b7c9b9",
+    "border": "#263329",
+    "shadow": "#040706",
+    "danger": "#c08a72",
+    "success": "#9bb88c",
+    "warning": "#d4c79a"
+  },
+  "wallpaper": null,
+  "fonts": {
+    "ui": "IBM Plex Mono",
+    "ui_size": 10,
+    "reading": "Noto Serif",
+    "reading_size": 11,
+    "mono": "Hack"
+  },
+  "radius": 4,
+  "blur": {
+    "enabled": true,
+    "size": 2,
+    "passes": 2,
+    "vibrancy": 0.4,
+    "radius_px": 24
+  },
+  "opacity": {
+    "chrome": 0.65,
+    "sidebar": 0.55,
+    "letterbox": 0.0,
+    "paper": 0.82
+  }
+}

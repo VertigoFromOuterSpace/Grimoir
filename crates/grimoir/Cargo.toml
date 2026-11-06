@@ -1,0 +1,23 @@
+[package]
+name = "grimoir"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "grimoir"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+async-channel.workspace = true
+gtk.workspace = true
+grimoir-library = { path = "../grimoir-library" }
+grimoir-pdf = { path = "../grimoir-pdf" }
+grimoir-theme = { path = "../grimoir-theme" }
+html2text.workspace = true
+image.workspace = true
+serde_json.workspace = true
+zip.workspace = true

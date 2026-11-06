@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Name=Grimoir
+GenericName=PDF Reader
+Comment=Transparent PDF reader and library
+Exec=grimoir %f
+Icon=grimoir
+Terminal=false
+Categories=Office;Viewer;
+MimeType=application/pdf;
+Keywords=PDF;ebook;reader;library;books;
+StartupNotify=true
+StartupWMClass=grimoir

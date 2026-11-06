@@ -1,0 +1,9 @@
+/target
+/vendor/pdfium
+*.log
+.DS_Store
+.idea/
+.vscode/
+
+/dist
+*.tar.gz
