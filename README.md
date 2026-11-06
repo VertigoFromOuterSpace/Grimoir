@@ -102,22 +102,21 @@ Grimoir available from the desktop application menu or a launcher such as
 Quickshell, install the release binary and the metadata:
 
 ```sh
-cargo build --release -p grimoir
-
-install -Dm755 target/release/grimoir ~/.local/bin/grimoir
-install -Dm644 assets/grimoir.desktop ~/.local/share/applications/grimoir.desktop
-install -Dm644 assets/grimoir.svg \
-  ~/.local/share/icons/hicolor/scalable/apps/grimoir.svg
-
-update-desktop-database ~/.local/share/applications 2>/dev/null || true
-gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null || true
+./scripts/install-local.sh
 ```
+
+The script is portable: it installs under `$HOME/.local` by default (override
+with `PREFIX=/some/prefix`), writes a wrapper with the current paths, installs
+`libpdfium.so` under `$PREFIX/lib/grimoir`, and generates the desktop entry with
+the correct `Exec=` path. No repository path or username is baked into the
+release binary.
+
+To use another PDFium build, set `GRIMOIR_PDFIUM_LIB` to the library file or
+`GRIMOIR_PDFIUM_DIR` to its directory before launching.
 
 If your launcher keeps an application index, refresh it afterwards. Quickshell
 uses `qs ipc call launcher refresh`; Grimoir is then available by typing its name
-after opening the launcher. `~/.local/bin` must be in `PATH` for the generic
-`Exec=grimoir` entry; otherwise edit the copied `.desktop` file to use the
-absolute path.
+after opening the launcher.
 
 ## Theme
 

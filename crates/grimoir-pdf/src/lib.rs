@@ -301,21 +301,50 @@ fn bind_pdfium_library() -> Result<Box<dyn PdfiumLibraryBindings>> {
         candidates.push(Pdfium::pdfium_platform_library_name_at_path(&dir));
     }
 
-    let vendor_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/pdfium/lib");
-    candidates.push(Pdfium::pdfium_platform_library_name_at_path(&vendor_dir));
-
     if let Ok(exe) = std::env::current_exe()
         && let Some(dir) = exe.parent()
     {
+        // Portable layouts: lib next to the binary (tarball), or in a
+        // per-user lib directory (the install script).
         candidates.push(Pdfium::pdfium_platform_library_name_at_path(dir));
-        let sibling_lib = dir.join("../lib");
-        candidates.push(Pdfium::pdfium_platform_library_name_at_path(&sibling_lib));
+        candidates.push(Pdfium::pdfium_platform_library_name_at_path(
+            &dir.join("lib"),
+        ));
+        candidates.push(Pdfium::pdfium_platform_library_name_at_path(
+            &dir.join("../lib/grimoir"),
+        ));
+        candidates.push(Pdfium::pdfium_platform_library_name_at_path(
+            &dir.join("../lib"),
+        ));
+        // A release built inside the repository can still find the dev tree
+        // without baking an absolute path into the installed binary.
+        candidates.push(Pdfium::pdfium_platform_library_name_at_path(
+            &dir.join("../../vendor/pdfium/lib"),
+        ));
+    }
+
+    if let Some(data_home) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share")))
+    {
+        candidates.push(Pdfium::pdfium_platform_library_name_at_path(
+            &data_home.join("grimoir/lib"),
+        ));
     }
 
     let relative_vendor = PathBuf::from("vendor/pdfium/lib");
     candidates.push(Pdfium::pdfium_platform_library_name_at_path(
         &relative_vendor,
     ));
+
+    #[cfg(debug_assertions)]
+    {
+        let manifest_vendor =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../vendor/pdfium/lib");
+        candidates.push(Pdfium::pdfium_platform_library_name_at_path(
+            &manifest_vendor,
+        ));
+    }
 
     let mut errors = Vec::new();
 

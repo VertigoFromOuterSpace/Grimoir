@@ -539,6 +539,16 @@ impl LibraryWindow {
         start_scan(&state);
         watch_theme(&state);
 
+        if let Some(path) = std::env::var_os("GRIMOIR_AUTO_OPEN") {
+            let state = state.clone();
+            glib::timeout_add_local_once(Duration::from_millis(700), move || {
+                let path = PathBuf::from(path);
+                if let Ok(Some(book)) = state.library.book_by_path(&path) {
+                    open_book(&state, &book);
+                }
+            });
+        }
+
         Ok(Self {
             window,
             _state: state,
