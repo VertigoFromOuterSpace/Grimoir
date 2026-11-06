@@ -7,6 +7,9 @@ while everything around it can become transparent or frosted glass. It also has
 a public, generic core and an optional local layer that adapts the app to the
 desktop theme.
 
+<img width="1918" height="1046" alt="image" src="https://github.com/user-attachments/assets/d43ca8bd-1834-4f39-8e84-400a2692de6d" />
+
+
 ## Status
 
 Phase 3 core is complete on the host. The app opens into a **library
