@@ -944,6 +944,10 @@ window.book-dialog {{
   transform: scale(1.045);
 }}
 
+.collection-card.drop-target .collection-cover {{
+  box-shadow: 0 0 0 2px {accent}, -8px 10px 22px {cover_shadow};
+}}
+
 .collection-cover {{
   border-left: 3px solid {cover_edge};
   border-radius: 2px 8px 8px 2px;

@@ -1512,6 +1512,32 @@ fn book_card(state: &Rc<LibraryState>, book: &Book, index: usize) -> gtk::Overla
         overlay.add_overlay(&check);
     }
 
+    let drag_state = state.clone();
+    let drag_book = book.id;
+    let drag = gtk::DragSource::new();
+    drag.set_actions(gdk::DragAction::MOVE);
+    drag.connect_prepare(move |_, _, _| {
+        let ids = if drag_state.selection_mode.get()
+            && drag_state.selected.borrow().contains(&drag_book)
+        {
+            drag_state
+                .selected
+                .borrow()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>()
+        } else {
+            vec![drag_book]
+        };
+        let payload = ids
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        Some(gdk::ContentProvider::for_value(&glib::Value::from(payload)))
+    });
+    card.add_controller(drag);
+
     overlay
 }
 
@@ -1879,6 +1905,41 @@ fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk
     content.append(&title);
 
     card.set_child(Some(&content));
+
+    let drop_target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+    drop_target.connect_enter({
+        let card = card.clone();
+        move |_, _, _| {
+            card.add_css_class("drop-target");
+            gdk::DragAction::MOVE
+        }
+    });
+    drop_target.connect_leave({
+        let card = card.clone();
+        move |_| card.remove_css_class("drop-target")
+    });
+    drop_target.connect_drop({
+        let state = state.clone();
+        let id = collection.id;
+        let name = collection.name.clone();
+        let card = card.clone();
+        move |_, value, _, _| {
+            card.remove_css_class("drop-target");
+            let Ok(payload) = value.get::<String>() else {
+                return false;
+            };
+            let ids = payload
+                .split(',')
+                .filter_map(|id| id.parse::<i64>().ok())
+                .collect::<Vec<_>>();
+            if ids.is_empty() {
+                return false;
+            }
+            apply_collection_target(&state, id, &name, ids);
+            true
+        }
+    });
+    card.add_controller(drop_target);
 
     card.connect_clicked({
         let state = state.clone();
