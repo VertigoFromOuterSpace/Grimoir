@@ -1637,7 +1637,7 @@ fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk
 
     let stage = gtk::Overlay::new();
     stage.add_css_class("collection-stage");
-    stage.set_size_request(172, 258);
+    stage.set_size_request(196, 258);
     stage.set_halign(gtk::Align::Center);
     stage.set_valign(gtk::Align::Start);
 
@@ -1656,38 +1656,14 @@ fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk
             picture.add_css_class("collection-cover");
             picture.set_content_fit(gtk::ContentFit::Cover);
             picture.set_can_shrink(true);
-            picture.set_size_request(92, 132);
+            picture.set_size_request(172, 258);
             if let Ok(texture) = gdk::Texture::from_filename(path) {
                 picture.set_paintable(Some(&texture));
             }
-            preview.put(
-                &picture,
-                6.0 + index as f64 * 31.0,
-                44.0 - index as f64 * 8.0,
-            );
+            preview.put(&picture, index as f64 * 12.0, 6.0 - index as f64 * 3.0);
         }
     }
     stage.set_child(Some(&preview));
-
-    let tab = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    tab.add_css_class("collection-tab");
-    tab.set_halign(gtk::Align::Start);
-    tab.set_valign(gtk::Align::Start);
-    tab.append(&gtk::Image::from_icon_name("folder-symbolic"));
-    tab.append(&gtk::Label::new(Some("COLLECTION")));
-    stage.add_overlay(&tab);
-
-    let count = gtk::Label::new(Some(&format!(
-        "{} book{}",
-        collection.count,
-        if collection.count == 1 { "" } else { "s" }
-    )));
-    count.add_css_class("collection-count");
-    count.set_halign(gtk::Align::End);
-    count.set_valign(gtk::Align::End);
-    count.set_margin_end(10);
-    count.set_margin_bottom(8);
-    stage.add_overlay(&count);
 
     content.append(&stage);
 
@@ -1700,10 +1676,6 @@ fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk
     title.set_max_width_chars(24);
     content.append(&title);
 
-    let muted = gtk::Label::new(Some("Collection"));
-    muted.add_css_class("showcase-muted");
-    muted.set_xalign(0.5);
-    content.append(&muted);
     card.set_child(Some(&content));
 
     card.connect_clicked({

@@ -934,43 +934,34 @@ window.book-dialog {{
 }}
 
 .collection-stage {{
-  background-color: {bar_bg};
-  border: 1px solid {bar_border};
-  border-radius: 10px;
-  box-shadow: 0 10px 24px {cover_shadow};
-}}
-
-.collection-card:hover .collection-stage {{
-  border-color: {accent};
-}}
-
-.collection-stage {{
-  transition: transform 140ms ease, border-color 140ms ease;
+  background: transparent;
+  border: none;
+  box-shadow: none;
+  transition: transform 140ms ease;
 }}
 
 .collection-card.collection-opening .collection-stage {{
   transform: scale(1.045);
-  border-color: {accent};
 }}
 
 .collection-cover {{
-  border: 1px solid {cover_edge};
-  border-radius: 4px;
+  border-left: 3px solid {cover_edge};
+  border-radius: 2px 8px 8px 2px;
   background-color: rgba(0,0,0,0.001);
-  box-shadow: 0 6px 16px {cover_shadow};
+  box-shadow: -8px 10px 22px {cover_shadow};
   transform-origin: center center;
 }}
 
 .collection-cover.preview-back {{
-  transform: perspective(700px) rotateY(-12deg) translateY(5px) scale(0.95);
+  transform: perspective(720px) rotateY(-14deg) translate(-6px, 6px);
 }}
 
 .collection-cover.preview-mid {{
-  transform: perspective(700px) rotateY(1deg) translateY(2px);
+  transform: perspective(720px) rotateY(0deg) translate(0px, 3px);
 }}
 
 .collection-cover.preview-front {{
-  transform: perspective(700px) rotateY(12deg);
+  transform: perspective(720px) rotateY(14deg) translate(6px, 0px);
 }}
 
 .collection-tab {{
