@@ -81,6 +81,7 @@ struct LibraryState {
     folder_nav: gtk::Box,
     collection_nav: gtk::Box,
     back_button: gtk::Button,
+    opening_book: Cell<bool>,
     selection_mode: Cell<bool>,
     selected: RefCell<HashSet<i64>>,
     selection_bar: gtk::Box,
@@ -331,6 +332,7 @@ impl LibraryWindow {
             folder_nav: folder_nav.clone(),
             collection_nav: collection_nav.clone(),
             back_button: back_button.clone(),
+            opening_book: Cell::new(false),
             selection_mode: Cell::new(false),
             selected: RefCell::new(HashSet::new()),
             selection_bar: selection_bar.clone(),
@@ -1713,6 +1715,9 @@ fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk
 }
 
 fn open_book(state: &Rc<LibraryState>, book: &Book) {
+    if state.opening_book.get() {
+        return;
+    }
     if let Some(reader) = state.active_reader.borrow().as_ref() {
         let window = reader.window();
         if window.is_visible() {
@@ -1721,7 +1726,7 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
         }
     }
     state.active_reader.borrow_mut().take();
-
+    state.opening_book.set(true);
     state.status_label.set_text("Opening…");
 
     let state = state.clone();
@@ -1754,6 +1759,7 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
         }));
         match opened {
             Ok(Ok(reader)) => {
+                state.opening_book.set(false);
                 let window = reader.window().clone();
                 *state.active_reader.borrow_mut() = Some(reader);
                 window.present();
@@ -1761,9 +1767,11 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
                 state.status_label.set_text("");
             }
             Ok(Err(error)) => {
+                state.opening_book.set(false);
                 state.status_label.set_text(&format!("{error:#}"));
             }
             Err(payload) => {
+                state.opening_book.set(false);
                 let message = payload
                     .downcast_ref::<&str>()
                     .copied()
