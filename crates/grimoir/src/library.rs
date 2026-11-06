@@ -1719,13 +1719,9 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
         return;
     }
     if let Some(reader) = state.active_reader.borrow().as_ref() {
-        let window = reader.window();
-        if window.is_visible() {
-            window.present();
-            return;
-        }
+        reader.window().present();
+        return;
     }
-    state.active_reader.borrow_mut().take();
     state.opening_book.set(true);
     state.status_label.set_text("Opening…");
 
@@ -1761,6 +1757,12 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
             Ok(Ok(reader)) => {
                 state.opening_book.set(false);
                 let window = reader.window().clone();
+                let weak_state = Rc::downgrade(&state);
+                window.connect_destroy(move |_| {
+                    if let Some(state) = weak_state.upgrade() {
+                        state.active_reader.borrow_mut().take();
+                    }
+                });
                 *state.active_reader.borrow_mut() = Some(reader);
                 window.present();
                 window.fullscreen();
