@@ -1722,24 +1722,7 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
     }
     state.active_reader.borrow_mut().take();
 
-    let loading = gtk::Window::builder()
-        .title("Opening book…")
-        .modal(false)
-        .transient_for(&state.window)
-        .default_width(300)
-        .default_height(120)
-        .build();
-    loading.add_css_class("library-window");
-    let loading_box = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    loading_box.set_halign(gtk::Align::Center);
-    loading_box.set_valign(gtk::Align::Center);
-    let spinner = gtk::Spinner::new();
-    spinner.start();
-    loading_box.append(&spinner);
-    let loading_label = gtk::Label::new(Some("Opening book…"));
-    loading_box.append(&loading_label);
-    loading.set_child(Some(&loading_box));
-    loading.present();
+    state.status_label.set_text("Opening…");
 
     let state = state.clone();
     let book = book.clone();
@@ -1775,14 +1758,12 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
                 *state.active_reader.borrow_mut() = Some(reader);
                 window.present();
                 window.fullscreen();
-                loading.close();
+                state.status_label.set_text("");
             }
             Ok(Err(error)) => {
-                loading.close();
                 state.status_label.set_text(&format!("{error:#}"));
             }
             Err(payload) => {
-                loading.close();
                 let message = payload
                     .downcast_ref::<&str>()
                     .copied()
