@@ -5,6 +5,7 @@ mod library;
 mod obsidian;
 mod reader;
 
+use std::cell::RefCell;
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -14,6 +15,10 @@ use gtk::glib;
 use gtk::prelude::*;
 
 const APP_ID: &str = "io.github.vertigofromouterspace.Grimoir";
+
+thread_local! {
+    static LIBRARY_WINDOW: RefCell<Option<library::LibraryWindow>> = const { RefCell::new(None) };
+}
 
 fn main() -> glib::ExitCode {
     std::panic::set_hook(Box::new(|info| {
@@ -57,9 +62,23 @@ fn main() -> glib::ExitCode {
 }
 
 fn open_library(app: &gtk::Application) {
+    if LIBRARY_WINDOW.with(|slot| {
+        if let Some(window) = slot.borrow().as_ref() {
+            window.present();
+            true
+        } else {
+            false
+        }
+    }) {
+        return;
+    }
+
     match Library::open_default() {
         Ok(library) => match library::LibraryWindow::open(app, Arc::new(library)) {
-            Ok(window) => window.present(),
+            Ok(window) => {
+                window.present();
+                LIBRARY_WINDOW.with(|slot| *slot.borrow_mut() = Some(window));
+            }
             Err(error) => {
                 eprintln!("{error:#}");
                 reader::show_error(app, &format!("{error:#}"));
