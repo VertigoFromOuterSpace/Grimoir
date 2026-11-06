@@ -4,9 +4,10 @@
 
 use std::cell::Cell;
 use std::cell::RefCell;
+use std::fs;
 use std::fs::File;
-use std::io::Read;
-use std::path::Path;
+use std::io::copy;
+use std::path::{Component, Path, PathBuf};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -19,6 +20,60 @@ use zip::ZipArchive;
 
 use crate::reader;
 
+mod webkit {
+    use std::ffi::CString;
+
+    use gtk::glib;
+    use gtk::prelude::*;
+
+    #[link(name = "webkitgtk-6.0")]
+    unsafe extern "C" {
+        fn webkit_web_view_new() -> *mut gtk::ffi::GtkWidget;
+        fn webkit_web_view_load_html(
+            view: *mut glib::gobject_ffi::GObject,
+            html: *const std::ffi::c_char,
+            base_uri: *const std::ffi::c_char,
+        );
+        fn webkit_web_view_get_settings(
+            view: *mut glib::gobject_ffi::GObject,
+        ) -> *mut glib::gobject_ffi::GObject;
+        fn webkit_settings_set_enable_javascript(
+            settings: *mut glib::gobject_ffi::GObject,
+            enabled: i32,
+        );
+        fn webkit_settings_set_allow_file_access_from_file_urls(
+            settings: *mut glib::gobject_ffi::GObject,
+            allowed: i32,
+        );
+    }
+
+    pub fn new_view() -> gtk::Widget {
+        unsafe {
+            let ptr = webkit_web_view_new();
+            let view: gtk::Widget = glib::translate::from_glib_none(ptr);
+            let settings =
+                webkit_web_view_get_settings(view.as_ptr() as *mut glib::gobject_ffi::GObject);
+            if !settings.is_null() {
+                webkit_settings_set_enable_javascript(settings, 0);
+                webkit_settings_set_allow_file_access_from_file_urls(settings, 1);
+            }
+            view
+        }
+    }
+
+    pub fn load_html(view: &gtk::Widget, html: &str, base_uri: &str) {
+        let html = CString::new(html).unwrap_or_default();
+        let base = CString::new(base_uri).unwrap_or_default();
+        unsafe {
+            webkit_web_view_load_html(
+                view.as_ptr() as *mut glib::gobject_ffi::GObject,
+                html.as_ptr(),
+                base.as_ptr(),
+            );
+        }
+    }
+}
+
 const BAR_HIDE_DELAY: u32 = 2600;
 
 pub struct EpubReaderWindow {
@@ -30,10 +85,10 @@ type BackHandler = Rc<dyn Fn()>;
 
 struct EpubState {
     window: gtk::ApplicationWindow,
-    archive: std::cell::RefCell<ZipArchive<File>>,
     pages: Vec<String>,
     page: Cell<usize>,
-    view: gtk::TextView,
+    root: PathBuf,
+    view: gtk::Widget,
     label: gtk::Label,
     bar: gtk::Revealer,
     bar_timer: Cell<Option<glib::SourceId>>,
@@ -97,33 +152,10 @@ impl EpubReaderWindow {
             }
         }
         pages.sort_by_key(|name| natural_page_key(name));
-        let mut readable = Vec::new();
-        for name in pages {
-            let Ok(mut entry) = archive.by_name(&name) else {
-                continue;
-            };
-            let mut bytes = Vec::new();
-            if entry.read_to_end(&mut bytes).is_ok() {
-                let text = html2text::config::with_decorator(
-                    html2text::render::text_renderer::TrivialDecorator::new(),
-                )
-                .string_from_read(bytes.as_slice(), 90)
-                .unwrap_or_default();
-                let text = text.trim();
-                let image_alt = text.len() < 160
-                    && [".jpg", ".jpeg", ".png", ".webp", ".gif"]
-                        .iter()
-                        .any(|ext| text.to_ascii_lowercase().contains(ext));
-                if !(text.is_empty() || image_alt || (text.starts_with('[') && text.ends_with(']')))
-                {
-                    readable.push(name);
-                }
-            }
-        }
-        let pages = readable;
         if pages.is_empty() {
-            return Err(anyhow!("EPUB has no text pages: {}", path.display()));
+            return Err(anyhow!("EPUB has no pages: {}", path.display()));
         }
+        let root = extract_epub(path, book_id, &mut archive)?;
 
         let title = library
             .as_ref()
@@ -164,32 +196,19 @@ impl EpubReaderWindow {
             );
         }
 
-        let view = gtk::TextView::new();
-        view.set_editable(false);
-        view.set_cursor_visible(false);
-        view.set_wrap_mode(gtk::WrapMode::WordChar);
-        view.set_left_margin(44);
-        view.set_right_margin(44);
-        view.set_top_margin(36);
-        view.set_bottom_margin(36);
-        view.add_css_class("epub-text");
+        let view = webkit::new_view();
+        view.add_css_class("epub-webview");
+        view.set_hexpand(true);
         view.set_vexpand(true);
-        let scroller = gtk::ScrolledWindow::new();
-        scroller.set_child(Some(&view));
-        scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-        scroller.set_hexpand(true);
-        scroller.set_vexpand(true);
-        scroller.set_margin_top(74);
-        scroller.set_margin_bottom(56);
-        scroller.set_margin_start(120);
-        scroller.set_margin_end(120);
-        scroller.add_css_class("epub-scroll");
-        scroller.add_css_class("epub-page");
+        view.set_margin_top(74);
+        view.set_margin_bottom(56);
+        view.set_margin_start(120);
+        view.set_margin_end(120);
 
         let overlay = gtk::Overlay::new();
         overlay.set_hexpand(true);
         overlay.set_vexpand(true);
-        overlay.set_child(Some(&scroller));
+        overlay.set_child(Some(&view));
 
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         bar.add_css_class("reader-bar");
@@ -244,9 +263,9 @@ impl EpubReaderWindow {
 
         let state = Rc::new(EpubState {
             window: window.clone(),
-            archive: std::cell::RefCell::new(archive),
             pages,
             page: Cell::new(0),
+            root,
             view: view.clone(),
             label: label.clone(),
             bar: bar_revealer.clone(),
@@ -265,18 +284,6 @@ impl EpubReaderWindow {
             window.fullscreen();
         }
         show_bar(&state);
-        {
-            let window = window.clone();
-            let view = view.clone();
-            glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
-                eprintln!(
-                    "epub alloc window={} view={} text={}",
-                    window.height(),
-                    view.height(),
-                    view.buffer().char_count()
-                );
-            });
-        }
         Ok(Self {
             window,
             _state: state,
@@ -409,43 +416,75 @@ fn connect_actions(
     }
 }
 
+fn extract_epub(
+    path: &Path,
+    book_id: Option<i64>,
+    archive: &mut ZipArchive<File>,
+) -> Result<PathBuf> {
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    let key = book_id.map(|id| format!("book-{id}")).unwrap_or_else(|| {
+        path.file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or("epub")
+            .to_owned()
+    });
+    let root = cache.join("grimoir").join("epub").join(key);
+    if root.exists() {
+        fs::remove_dir_all(&root)?;
+    }
+    fs::create_dir_all(&root)?;
+
+    for index in 0..archive.len() {
+        let mut entry = archive.by_index(index)?;
+        let name = entry.name();
+        let relative = Path::new(name);
+        if relative.is_absolute()
+            || relative.components().any(|component| {
+                matches!(
+                    component,
+                    Component::Prefix(_) | Component::RootDir | Component::ParentDir
+                )
+            })
+        {
+            continue;
+        }
+        let destination = root.join(relative);
+        if entry.is_dir() {
+            fs::create_dir_all(&destination)?;
+        } else {
+            if let Some(parent) = destination.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut output = File::create(&destination)?;
+            copy(&mut entry, &mut output)?;
+        }
+    }
+    Ok(root)
+}
+
 fn show_page(state: &Rc<EpubState>, index: usize) {
     if index >= state.pages.len() {
         return;
     }
-    let name = state.pages[index].clone();
-    let mut bytes = Vec::new();
-    let read = state
-        .archive
-        .borrow_mut()
-        .by_name(&name)
-        .ok()
-        .map(|mut entry| entry.read_to_end(&mut bytes));
-    if read.is_none() {
+    let name = &state.pages[index];
+    let path = state.root.join(name);
+    let Ok(bytes) = fs::read(&path) else {
         return;
-    }
+    };
     let html = String::from_utf8_lossy(&bytes);
-    let text = html2text::config::with_decorator(
-        html2text::render::text_renderer::TrivialDecorator::new(),
-    )
-    .string_from_read(html.as_bytes(), 90)
-    .unwrap_or_default();
-    eprintln!(
-        "epub page {index} {name} bytes={} chars={} start={:?}",
-        bytes.len(),
-        text.chars().count(),
-        text.chars().take(100).collect::<String>()
-    );
-    state.view.buffer().set_text(&text);
+    let base = path
+        .parent()
+        .and_then(|parent| gtk::glib::filename_to_uri(parent, None).ok())
+        .map(|uri| format!("{}/", uri.trim_end_matches('/')))
+        .unwrap_or_default();
+    webkit::load_html(&state.view, &html, &base);
     state.page.set(index);
     state
         .label
         .set_text(&format!("{} / {}", index + 1, state.pages.len()));
-    let buffer = state.view.buffer();
-    buffer.place_cursor(&buffer.start_iter());
-    state
-        .view
-        .scroll_to_iter(&mut buffer.start_iter(), 0.0, false, 0.0, 0.0);
     save_progress(state);
     show_bar(state);
 }
