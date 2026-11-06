@@ -1726,7 +1726,7 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
 
     let state = state.clone();
     let book = book.clone();
-    glib::timeout_add_local_once(Duration::from_millis(30), move || {
+    glib::timeout_add_local_once(Duration::from_millis(250), move || {
         let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match book.format.as_str() {
                 "cbz" => CbzReaderWindow::open(
