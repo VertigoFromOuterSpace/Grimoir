@@ -944,10 +944,33 @@ window.book-dialog {{
   border-color: {accent};
 }}
 
+.collection-stage {{
+  transition: transform 140ms ease, border-color 140ms ease;
+}}
+
+.collection-card.collection-opening .collection-stage {{
+  transform: scale(1.045);
+  border-color: {accent};
+}}
+
 .collection-cover {{
   border: 1px solid {cover_edge};
   border-radius: 4px;
-  box-shadow: 0 4px 12px {cover_shadow};
+  background-color: rgba(0,0,0,0.001);
+  box-shadow: 0 6px 16px {cover_shadow};
+  transform-origin: center center;
+}}
+
+.collection-cover.preview-back {{
+  transform: perspective(700px) rotateY(-12deg) translateY(5px) scale(0.95);
+}}
+
+.collection-cover.preview-mid {{
+  transform: perspective(700px) rotateY(1deg) translateY(2px);
+}}
+
+.collection-cover.preview-front {{
+  transform: perspective(700px) rotateY(12deg);
 }}
 
 .collection-tab {{

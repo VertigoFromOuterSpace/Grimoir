@@ -1682,12 +1682,20 @@ fn collection_card(state: &Rc<LibraryState>, collection: &CollectionCard) -> gtk
         let state = state.clone();
         let id = collection.id;
         let name = collection.name.clone();
+        let card = card.clone();
         move |_| {
-            *state.section.borrow_mut() = Section::Collection(id, name.clone());
-            state.query.borrow_mut().clear();
-            state.last_signature.borrow_mut().clear();
-            update_nav_active(&state);
-            refresh(&state);
+            card.add_css_class("collection-opening");
+            let state = state.clone();
+            let name = name.clone();
+            let card = card.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(140), move || {
+                *state.section.borrow_mut() = Section::Collection(id, name);
+                state.query.borrow_mut().clear();
+                state.last_signature.borrow_mut().clear();
+                update_nav_active(&state);
+                refresh(&state);
+                card.remove_css_class("collection-opening");
+            });
         }
     });
 
@@ -1706,7 +1714,7 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
 
     let loading = gtk::Window::builder()
         .title("Opening book…")
-        .modal(true)
+        .modal(false)
         .transient_for(&state.window)
         .default_width(300)
         .default_height(120)
@@ -1726,40 +1734,54 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
     let state = state.clone();
     let book = book.clone();
     glib::timeout_add_local_once(Duration::from_millis(30), move || {
-        let opened = match book.format.as_str() {
-            "cbz" => CbzReaderWindow::open(
-                &state.app,
-                &book.path,
-                Some(state.library.clone()),
-                Some(book.id),
-            )
-            .map(ActiveReader::Cbz),
-            "epub" => EpubReaderWindow::open(
-                &state.app,
-                &book.path,
-                Some(state.library.clone()),
-                Some(book.id),
-            )
-            .map(ActiveReader::Epub),
-            _ => ReaderWindow::open(
-                &state.app,
-                &book.path,
-                Some(state.library.clone()),
-                Some(book.id),
-            )
-            .map(ActiveReader::Pdf),
-        };
+        let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            match book.format.as_str() {
+                "cbz" => CbzReaderWindow::open(
+                    &state.app,
+                    &book.path,
+                    Some(state.library.clone()),
+                    Some(book.id),
+                )
+                .map(ActiveReader::Cbz),
+                "epub" => EpubReaderWindow::open(
+                    &state.app,
+                    &book.path,
+                    Some(state.library.clone()),
+                    Some(book.id),
+                )
+                .map(ActiveReader::Epub),
+                _ => ReaderWindow::open(
+                    &state.app,
+                    &book.path,
+                    Some(state.library.clone()),
+                    Some(book.id),
+                )
+                .map(ActiveReader::Pdf),
+            }
+        }));
         match opened {
-            Ok(reader) => {
+            Ok(Ok(reader)) => {
                 let window = reader.window().clone();
                 *state.active_reader.borrow_mut() = Some(reader);
                 window.present();
                 window.fullscreen();
                 loading.close();
             }
-            Err(error) => {
+            Ok(Err(error)) => {
                 loading.close();
                 state.status_label.set_text(&format!("{error:#}"));
+            }
+            Err(payload) => {
+                loading.close();
+                let message = payload
+                    .downcast_ref::<&str>()
+                    .copied()
+                    .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+                    .unwrap_or("unknown error");
+                state
+                    .status_label
+                    .set_text(&format!("Failed to open book: {message}"));
+                eprintln!("reader panic: {message}");
             }
         }
     });

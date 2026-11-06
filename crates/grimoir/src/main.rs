@@ -16,6 +16,22 @@ use gtk::prelude::*;
 const APP_ID: &str = "io.github.vertigofromouterspace.Grimoir";
 
 fn main() -> glib::ExitCode {
+    std::panic::set_hook(Box::new(|info| {
+        use std::io::Write;
+        let message = format!(
+            "{info}\nbacktrace:\n{}\n",
+            std::backtrace::Backtrace::force_capture()
+        );
+        eprintln!("{message}");
+        if let Ok(mut file) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(std::env::temp_dir().join("grimoir-panic.log"))
+        {
+            let _ = file.write_all(message.as_bytes());
+        }
+    }));
+
     let app = gtk::Application::builder()
         .application_id(APP_ID)
         .flags(gio::ApplicationFlags::HANDLES_OPEN)
