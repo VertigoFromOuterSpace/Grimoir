@@ -17,7 +17,7 @@ install -Dm644 vendor/pdfium/lib/libpdfium.so "$libdir/libpdfium.so"
 
 cat > "$bindir/grimoir" <<EOF
 #!/bin/sh
-unset GIO_LAUNCHED_DESKTOP_FILE GIO_LAUNCHED_DESKTOP_FILE_PID DESKTOP_STARTUP_ID
+unset GIO_LAUNCHED_DESKTOP_FILE GIO_LAUNCHED_DESKTOP_FILE_PID DESKTOP_STARTUP_ID XDG_ACTIVATION_TOKEN XDG_BACKEND
 if [ -d "$libdir" ]; then
   export GRIMOIR_PDFIUM_DIR="$libdir"
 fi
