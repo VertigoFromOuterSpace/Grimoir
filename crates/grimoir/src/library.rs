@@ -1718,10 +1718,13 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
     if state.opening_book.get() {
         return;
     }
-    if let Some(reader) = state.active_reader.borrow().as_ref() {
+    if let Some(reader) = state.active_reader.borrow().as_ref()
+        && reader.window().is_visible()
+    {
         reader.window().present();
         return;
     }
+    state.active_reader.borrow_mut().take();
     state.opening_book.set(true);
     state.status_label.set_text("Opening…");
 
@@ -1758,6 +1761,16 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
                 state.opening_book.set(false);
                 let window = reader.window().clone();
                 let weak_state = Rc::downgrade(&state);
+                let weak_state_close = weak_state.clone();
+                window.connect_close_request(move |_| {
+                    if let Some(state) = weak_state_close.upgrade() {
+                        let state = state.clone();
+                        glib::idle_add_local_once(move || {
+                            state.active_reader.borrow_mut().take();
+                        });
+                    }
+                    glib::Propagation::Proceed
+                });
                 window.connect_destroy(move |_| {
                     if let Some(state) = weak_state.upgrade() {
                         state.active_reader.borrow_mut().take();
