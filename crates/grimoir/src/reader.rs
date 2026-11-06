@@ -52,6 +52,12 @@ impl ReaderState {
         if let Some(monitor) = self.theme_monitor.borrow_mut().take() {
             monitor.cancel();
         }
+        for controller in self.controllers.borrow_mut().drain(..) {
+            self.window.remove_controller(&controller);
+        }
+        if let Some(handler) = self.close_handler.take() {
+            self.window.disconnect(handler);
+        }
         self.worker.shutdown();
         self.cache.borrow_mut().clear();
         self.cache_order.borrow_mut().clear();
@@ -65,6 +71,7 @@ impl ReaderState {
 }
 
 type AnnotationDrag = (usize, (f64, f64), (f64, f64));
+type BackHandler = Rc<dyn Fn()>;
 
 struct ReaderState {
     window: gtk::ApplicationWindow,
@@ -100,6 +107,8 @@ struct ReaderState {
     annotation_popover: gtk::Popover,
     annotation_start: Cell<Option<AnnotationDrag>>,
     annotation_preview: RefCell<Option<PageMark>>,
+    controllers: RefCell<Vec<gtk::EventController>>,
+    close_handler: Cell<Option<glib::SignalHandlerId>>,
     book_title: String,
     paper_scale: gtk::Scale,
     ink_scale: gtk::Scale,
@@ -122,6 +131,7 @@ struct ReaderState {
     session_id: Cell<Option<i64>>,
     session_start_page: Cell<usize>,
     session_started: Cell<Option<std::time::Instant>>,
+    back: RefCell<Option<BackHandler>>,
     closed: Cell<bool>,
 }
 
@@ -132,6 +142,39 @@ impl ReaderWindow {
         library: Option<Arc<Library>>,
         book_id: Option<i64>,
     ) -> Result<Self> {
+        Self::open_inner(app, path, library, book_id, None, None, None)
+    }
+
+    pub fn open_embedded(
+        app: &gtk::Application,
+        path: &Path,
+        library: Option<Arc<Library>>,
+        book_id: Option<i64>,
+        host: &gtk::ApplicationWindow,
+        container: &gtk::Box,
+        back: BackHandler,
+    ) -> Result<Self> {
+        Self::open_inner(
+            app,
+            path,
+            library,
+            book_id,
+            Some(host),
+            Some(container),
+            Some(back),
+        )
+    }
+
+    fn open_inner(
+        app: &gtk::Application,
+        path: &Path,
+        library: Option<Arc<Library>>,
+        book_id: Option<i64>,
+        host: Option<&gtk::ApplicationWindow>,
+        container: Option<&gtk::Box>,
+        back: Option<BackHandler>,
+    ) -> Result<Self> {
+        let back_mode = back.is_some();
         let (event_tx, event_rx) = async_channel::unbounded();
         let (worker, info) = PdfWorker::spawn(path, event_tx)?;
         let page_count = info.page_count;
@@ -167,14 +210,19 @@ impl ReaderWindow {
             .unwrap_or_else(|| "Grimoir".to_owned());
         let book_title = title.clone();
 
-        let window = gtk::ApplicationWindow::builder()
-            .application(app)
-            .title(&title)
-            .decorated(false)
-            .default_width(1280)
-            .default_height(800)
-            .build();
-        window.add_css_class("grimoir-reader");
+        let window = if let Some(host) = host {
+            host.clone()
+        } else {
+            let window = gtk::ApplicationWindow::builder()
+                .application(app)
+                .title(&title)
+                .decorated(false)
+                .default_width(1280)
+                .default_height(800)
+                .build();
+            window.add_css_class("grimoir-reader");
+            window
+        };
 
         let display = gdk::Display::default().context("no GDK display available")?;
         let css_provider = gtk::CssProvider::new();
@@ -303,8 +351,16 @@ impl ReaderWindow {
         fullscreen.set_tooltip_text(Some("Fullscreen (F11)"));
         line1.append(&fullscreen);
 
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
-        close.set_tooltip_text(Some("Close"));
+        let close = gtk::Button::from_icon_name(if back_mode {
+            "go-previous-symbolic"
+        } else {
+            "window-close-symbolic"
+        });
+        close.set_tooltip_text(Some(if back_mode {
+            "Back to library"
+        } else {
+            "Close"
+        }));
         line1.append(&close);
 
         let glass_toggle = gtk::ToggleButton::with_label("Glass");
@@ -436,7 +492,11 @@ impl ReaderWindow {
         bar_revealer.set_margin_end(10);
         overlay.add_overlay(&bar_revealer);
 
-        window.set_child(Some(&overlay));
+        if let Some(container) = container {
+            container.append(&overlay);
+        } else {
+            window.set_child(Some(&overlay));
+        }
 
         let state = Rc::new(ReaderState {
             window: window.clone(),
@@ -472,6 +532,8 @@ impl ReaderWindow {
             annotation_popover: annotation_popover.clone(),
             annotation_start: Cell::new(None),
             annotation_preview: RefCell::new(None),
+            controllers: RefCell::new(Vec::new()),
+            close_handler: Cell::new(None),
             book_title,
             paper_scale: paper_scale.clone(),
             ink_scale: ink_scale.clone(),
@@ -494,6 +556,7 @@ impl ReaderWindow {
             session_id: Cell::new(None),
             session_start_page: Cell::new(initial_page),
             session_started: Cell::new(None),
+            back: RefCell::new(back),
             closed: Cell::new(false),
         });
 
@@ -546,6 +609,10 @@ impl ReaderWindow {
 
     pub fn window(&self) -> &gtk::ApplicationWindow {
         &self.window
+    }
+
+    pub fn shutdown(&self) {
+        self._state.cleanup();
     }
 }
 
@@ -679,8 +746,14 @@ fn connect_controls(
         });
     }
     {
-        let window = state.window.clone();
-        close.connect_clicked(move |_| window.close());
+        let state = state.clone();
+        close.connect_clicked(move |_| {
+            if let Some(back) = state.back.borrow().as_ref() {
+                back();
+            } else {
+                state.window.close();
+            }
+        });
     }
 }
 
@@ -1133,26 +1206,28 @@ fn connect_window_actions(
     bar_revealer: &gtk::Revealer,
 ) {
     {
-        let state = state.clone();
-        window.connect_close_request(move |_| {
-            save_progress(&state);
-            save_reader_prefs(&state);
-            finish_session(&state);
-            state.cleanup();
+        let handler_state = state.clone();
+        let handler = window.connect_close_request(move |_| {
+            save_progress(&handler_state);
+            save_reader_prefs(&handler_state);
+            finish_session(&handler_state);
+            handler_state.cleanup();
             glib::Propagation::Proceed
         });
+        state.close_handler.set(Some(handler));
     }
 
     {
-        let state = state.clone();
+        let motion_state = state.clone();
         let motion = gtk::EventControllerMotion::new();
         motion.set_propagation_phase(gtk::PropagationPhase::Capture);
         motion.connect_motion(move |_, _, y| {
             if y <= 10.0 {
-                show_bar(&state);
+                show_bar(&motion_state);
             }
         });
-        window.add_controller(motion);
+        window.add_controller(motion.clone());
+        state.controllers.borrow_mut().push(motion.upcast());
     }
 
     {
@@ -1271,14 +1346,19 @@ fn connect_window_actions(
                     glib::Propagation::Stop
                 }
                 gdk::Key::Escape => {
-                    state.window.close();
+                    if let Some(back) = state.back.borrow().as_ref() {
+                        back();
+                    } else {
+                        state.window.close();
+                    }
                     glib::Propagation::Stop
                 }
                 _ => glib::Propagation::Proceed,
             }
         });
     }
-    window.add_controller(key);
+    window.add_controller(key.clone());
+    state.controllers.borrow_mut().push(key.upcast());
 
     let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
     {
@@ -1306,7 +1386,8 @@ fn connect_window_actions(
             glib::Propagation::Stop
         });
     }
-    window.add_controller(scroll);
+    window.add_controller(scroll.clone());
+    state.controllers.borrow_mut().push(scroll.upcast());
 }
 
 fn connect_worker_events(state: &Rc<ReaderState>, events: async_channel::Receiver<WorkerEvent>) {

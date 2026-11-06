@@ -63,6 +63,12 @@ impl ActiveReader {
             Self::Epub(reader) => reader.window(),
         }
     }
+
+    fn shutdown(&self) {
+        if let Self::Pdf(reader) = self {
+            reader.shutdown();
+        }
+    }
 }
 
 struct LibraryState {
@@ -72,6 +78,8 @@ struct LibraryState {
     books: RefCell<Vec<Book>>,
     section: RefCell<Section>,
     query: RefCell<String>,
+    stack: gtk::Stack,
+    reader_host: gtk::Box,
     store: gio::ListStore,
     grid: gtk::GridView,
     empty_state: gtk::Box,
@@ -314,7 +322,13 @@ impl LibraryWindow {
         selection_bar.append(&selection_cancel);
         overlay.add_overlay(&selection_bar);
 
-        window.set_child(Some(&overlay));
+        let stack = gtk::Stack::new();
+        let reader_host = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        reader_host.set_hexpand(true);
+        reader_host.set_vexpand(true);
+        stack.add_named(&overlay, Some("catalog"));
+        stack.add_named(&reader_host, Some("reader"));
+        window.set_child(Some(&stack));
 
         let state = Rc::new(LibraryState {
             window: window.clone(),
@@ -323,6 +337,8 @@ impl LibraryWindow {
             books: RefCell::new(Vec::new()),
             section: RefCell::new(Section::All),
             query: RefCell::new(String::new()),
+            stack: stack.clone(),
+            reader_host: reader_host.clone(),
             store: store.clone(),
             grid: grid.clone(),
             empty_state: empty_state.clone(),
@@ -1731,6 +1747,7 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
     let state = state.clone();
     let book = book.clone();
     glib::timeout_add_local_once(Duration::from_millis(250), move || {
+        let embedded = !matches!(book.format.as_str(), "cbz" | "epub");
         let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match book.format.as_str() {
                 "cbz" => CbzReaderWindow::open(
@@ -1747,19 +1764,44 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
                     Some(book.id),
                 )
                 .map(ActiveReader::Epub),
-                _ => ReaderWindow::open(
-                    &state.app,
-                    &book.path,
-                    Some(state.library.clone()),
-                    Some(book.id),
-                )
-                .map(ActiveReader::Pdf),
+                _ => {
+                    let weak_state = Rc::downgrade(&state);
+                    let back: Rc<dyn Fn()> = Rc::new(move || {
+                        if let Some(state) = weak_state.upgrade() {
+                            state.stack.set_visible_child_name("catalog");
+                            state.window.unfullscreen();
+                            let state = state.clone();
+                            glib::idle_add_local_once(move || {
+                                while let Some(child) = state.reader_host.first_child() {
+                                    state.reader_host.remove(&child);
+                                }
+                                if let Some(reader) = state.active_reader.borrow_mut().take() {
+                                    reader.shutdown();
+                                }
+                            });
+                        }
+                    });
+                    ReaderWindow::open_embedded(
+                        &state.app,
+                        &book.path,
+                        Some(state.library.clone()),
+                        Some(book.id),
+                        &state.window,
+                        &state.reader_host,
+                        back,
+                    )
+                    .map(ActiveReader::Pdf)
+                }
             }
         }));
         match opened {
             Ok(Ok(reader)) => {
                 state.opening_book.set(false);
-                let window = reader.window().clone();
+                let window = if embedded {
+                    state.window.clone()
+                } else {
+                    reader.window().clone()
+                };
                 let weak_state = Rc::downgrade(&state);
                 let weak_state_close = weak_state.clone();
                 window.connect_close_request(move |_| {
@@ -1777,8 +1819,13 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
                     }
                 });
                 *state.active_reader.borrow_mut() = Some(reader);
-                window.present();
-                window.fullscreen();
+                if embedded {
+                    state.stack.set_visible_child_name("reader");
+                    window.fullscreen();
+                } else {
+                    window.present();
+                    window.fullscreen();
+                }
                 state.status_label.set_text("");
             }
             Ok(Err(error)) => {
