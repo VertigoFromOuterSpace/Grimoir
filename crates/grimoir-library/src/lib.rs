@@ -408,6 +408,46 @@ impl Library {
         Ok(())
     }
 
+    pub fn add_books_to_collection(&self, book_ids: &[i64], collection_id: i64) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        for book_id in book_ids {
+            tx.execute(
+                "INSERT OR IGNORE INTO book_collections (book_id, collection_id) VALUES (?1, ?2)",
+                params![book_id, collection_id],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Removes books from the library database only. The source files are
+    /// never touched; this is the basis of Grimoir's read-only file policy.
+    pub fn remove_books(&self, book_ids: &[i64]) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        let mut covers = Vec::new();
+        for book_id in book_ids {
+            let cover: Option<String> = tx
+                .query_row(
+                    "SELECT cover_path FROM books WHERE id = ?1",
+                    [book_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            if let Some(cover) = cover {
+                covers.push(cover);
+            }
+            tx.execute("DELETE FROM books WHERE id = ?1", [book_id])?;
+        }
+        tx.commit()?;
+        for cover in covers {
+            let _ = fs::remove_file(cover);
+        }
+        Ok(())
+    }
+
     pub fn update_metadata(&self, book_id: i64, title: &str, authors: Option<&str>) -> Result<()> {
         let title = title.trim();
         if title.is_empty() {

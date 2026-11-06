@@ -412,12 +412,19 @@ popover row:hover {{
   background-color: {button_hover};
 }}
 
-.card-menu,
-.card-menu contents {{
+.card-menu {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}}
+
+.card-menu > contents {{
   background-color: {bar_bg};
   background-image: none;
   border: 1px solid {bar_border};
-  border-radius: 10px;
+  border-radius: 8px;
   box-shadow: 0 10px 28px {bar_shadow};
 }}
 
@@ -493,6 +500,23 @@ popover row:hover {{
 
 .reader-popover row:disabled label {{
   color: {text_muted};
+}}
+
+popover.card-menu {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  padding: 0;
+}}
+
+popover.card-menu > contents {{
+  background-color: {bar_bg};
+  background-image: none;
+  border: 1px solid {bar_border};
+  border-radius: 8px;
+  box-shadow: 0 10px 28px {bar_shadow};
 }}
 
 window.library-window {{
@@ -755,6 +779,83 @@ window.library-window .library-topbar entry.library-search:focus-within {{
   opacity: 1;
 }}
 
+.card-menu-button {{
+  background-color: transparent;
+  background-image: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+}}
+
+.card-menu-button > button {{
+  background-color: {bar_bg};
+  background-image: none;
+  border: 1px solid {bar_border};
+  border-radius: 999px;
+  color: {text};
+  min-width: 25px;
+  min-height: 25px;
+  padding: 2px;
+  box-shadow: 0 3px 10px {cover_shadow};
+  opacity: 0.86;
+}}
+
+.card-menu-button > button:hover {{
+  background-color: {button_hover};
+  border-color: {accent};
+  opacity: 1;
+}}
+
+.select-check {{
+  background-color: {bar_bg};
+  border: 1px solid {bar_border};
+  border-radius: 5px;
+  padding: 2px;
+}}
+
+.select-check check {{
+  border-radius: 2px;
+  min-width: 15px;
+  min-height: 15px;
+}}
+
+.select-check:checked {{
+  background-color: {button_checked};
+  border-color: {accent};
+}}
+
+.selection-bar {{
+  background-color: {bar_bg};
+  border: 1px solid {bar_border};
+  border-radius: 8px;
+  padding: 6px 10px;
+  box-shadow: 0 8px 24px {bar_shadow};
+  color: {text};
+{backdrop_bar}}}
+
+.selection-count {{
+  color: {text};
+  font-weight: bold;
+  margin-right: 4px;
+}}
+
+.selection-action {{
+  background-color: transparent;
+  background-image: none;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: {text};
+  padding: 4px 9px;
+}}
+
+.selection-action:hover {{
+  background-color: {button_hover};
+}}
+
+.selection-action.danger {{
+  color: {danger};
+}}
+
 window.book-dialog {{
   background-color: {bg};
   border: 1px solid {bar_border};
@@ -906,6 +1007,7 @@ window.book-dialog {{
             text = c.text,
             text_muted = c.text_muted,
             accent = c.accent,
+            danger = c.danger,
             accent_soft = css_rgba(&c.accent, 0.16),
             border = css_rgba(&c.border, 0.8),
             radius = radius,
