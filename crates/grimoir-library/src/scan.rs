@@ -5,6 +5,8 @@ use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow};
@@ -37,11 +39,12 @@ pub fn spawn(
     library: Arc<Library>,
     roots: Vec<PathBuf>,
     events: async_channel::Sender<ScanEvent>,
+    pause: Arc<AtomicBool>,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("grimoir-library-scan".to_owned())
         .spawn(move || {
-            let result = scan(&library, &roots, &events);
+            let result = scan(&library, &roots, &events, &pause);
             if let Err(error) = result {
                 let _ = events.send_blocking(ScanEvent::Finished {
                     total: 0,
@@ -60,6 +63,7 @@ fn scan(
     library: &Library,
     roots: &[PathBuf],
     events: &async_channel::Sender<ScanEvent>,
+    pause: &AtomicBool,
 ) -> Result<()> {
     let (files, walk_errors) = collect_books(roots);
     let total = files.len();
@@ -74,6 +78,9 @@ fn scan(
     let mut errors = walk_errors;
 
     for (done, path) in files.iter().enumerate() {
+        while pause.load(Ordering::Relaxed) {
+            std::thread::sleep(Duration::from_millis(100));
+        }
         // A scan may still be running when the user removes a root. Never
         // reinsert a book whose root is no longer configured.
         let active_roots = library.roots().unwrap_or_default();

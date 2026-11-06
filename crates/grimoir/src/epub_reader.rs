@@ -3,6 +3,7 @@
 //! part of this fallback.
 
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::fs::File;
 use std::io::Read;
 use std::path::Path;
@@ -25,6 +26,8 @@ pub struct EpubReaderWindow {
     _state: Rc<EpubState>,
 }
 
+type BackHandler = Rc<dyn Fn()>;
+
 struct EpubState {
     window: gtk::ApplicationWindow,
     archive: std::cell::RefCell<ZipArchive<File>>,
@@ -37,6 +40,8 @@ struct EpubState {
     bar_hovered: Cell<bool>,
     library: Option<Arc<Library>>,
     book_id: Option<i64>,
+    back: RefCell<Option<BackHandler>>,
+    controllers: RefCell<Vec<gtk::EventController>>,
 }
 
 impl EpubReaderWindow {
@@ -46,6 +51,40 @@ impl EpubReaderWindow {
         library: Option<Arc<Library>>,
         book_id: Option<i64>,
     ) -> Result<Self> {
+        Self::open_inner(app, path, library, book_id, None, None, None)
+    }
+
+    pub fn open_embedded(
+        app: &gtk::Application,
+        path: &Path,
+        library: Option<Arc<Library>>,
+        book_id: Option<i64>,
+        host: &gtk::ApplicationWindow,
+        container: &gtk::Box,
+        back: BackHandler,
+    ) -> Result<Self> {
+        Self::open_inner(
+            app,
+            path,
+            library,
+            book_id,
+            Some(host),
+            Some(container),
+            Some(back),
+        )
+    }
+
+    fn open_inner(
+        app: &gtk::Application,
+        path: &Path,
+        library: Option<Arc<Library>>,
+        book_id: Option<i64>,
+        host: Option<&gtk::ApplicationWindow>,
+        container: Option<&gtk::Box>,
+        back: Option<BackHandler>,
+    ) -> Result<Self> {
+        let embedded = host.is_some();
+        let back_mode = back.is_some();
         let file =
             File::open(path).with_context(|| format!("failed to open EPUB {}", path.display()))?;
         let mut archive = ZipArchive::new(file)
@@ -101,12 +140,17 @@ impl EpubReaderWindow {
             .and_then(|library| book_id.and_then(|id| library.book_by_id(id).ok().flatten()))
             .and_then(|book| book.authors);
 
-        let window = gtk::ApplicationWindow::builder()
-            .application(app)
-            .title(&title)
-            .decorated(false)
-            .build();
-        window.add_css_class("grimoir-reader");
+        let window = if let Some(host) = host {
+            host.clone()
+        } else {
+            let window = gtk::ApplicationWindow::builder()
+                .application(app)
+                .title(&title)
+                .decorated(false)
+                .build();
+            window.add_css_class("grimoir-reader");
+            window
+        };
 
         let (theme, _theme_path) = reader::load_initial_theme();
         let provider = gtk::CssProvider::new();
@@ -171,8 +215,16 @@ impl EpubReaderWindow {
         let fullscreen = gtk::Button::from_icon_name("view-fullscreen-symbolic");
         fullscreen.set_tooltip_text(Some("Toggle fullscreen (F)"));
         bar.append(&fullscreen);
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
-        close.set_tooltip_text(Some("Close (Esc)"));
+        let close = gtk::Button::from_icon_name(if back_mode {
+            "go-previous-symbolic"
+        } else {
+            "window-close-symbolic"
+        });
+        close.set_tooltip_text(Some(if back_mode {
+            "Back to library (Esc)"
+        } else {
+            "Close (Esc)"
+        }));
         bar.append(&close);
 
         let bar_revealer = gtk::Revealer::new();
@@ -184,7 +236,11 @@ impl EpubReaderWindow {
         bar_revealer.set_margin_start(10);
         bar_revealer.set_margin_end(10);
         overlay.add_overlay(&bar_revealer);
-        window.set_child(Some(&overlay));
+        if let Some(container) = container {
+            container.append(&overlay);
+        } else {
+            window.set_child(Some(&overlay));
+        }
 
         let state = Rc::new(EpubState {
             window: window.clone(),
@@ -198,12 +254,16 @@ impl EpubReaderWindow {
             bar_hovered: Cell::new(false),
             library,
             book_id,
+            back: RefCell::new(back),
+            controllers: RefCell::new(Vec::new()),
         });
 
         show_page(&state, 0);
         connect_actions(&state, &prev, &next, &fullscreen, &close, &bar);
-        window.present();
-        window.fullscreen();
+        if !embedded {
+            window.present();
+            window.fullscreen();
+        }
         show_bar(&state);
         {
             let window = window.clone();
@@ -225,6 +285,15 @@ impl EpubReaderWindow {
 
     pub fn window(&self) -> &gtk::ApplicationWindow {
         &self.window
+    }
+
+    pub fn shutdown(&self) {
+        if let Some(timer) = self._state.bar_timer.take() {
+            timer.remove();
+        }
+        for controller in self._state.controllers.borrow_mut().drain(..) {
+            self.window.remove_controller(&controller);
+        }
     }
 }
 
@@ -255,8 +324,14 @@ fn connect_actions(
         });
     }
     {
-        let window = state.window.clone();
-        close.connect_clicked(move |_| window.close());
+        let state = state.clone();
+        close.connect_clicked(move |_| {
+            if let Some(back) = state.back.borrow().as_ref() {
+                back();
+            } else {
+                state.window.close();
+            }
+        });
     }
 
     let motion = gtk::EventControllerMotion::new();
@@ -295,13 +370,20 @@ fn connect_actions(
                         state.window.fullscreen();
                     }
                 }
-                gdk::Key::Escape => state.window.close(),
+                gdk::Key::Escape => {
+                    if let Some(back) = state.back.borrow().as_ref() {
+                        back();
+                    } else {
+                        state.window.close();
+                    }
+                }
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
         });
     }
-    state.window.add_controller(keys);
+    state.window.add_controller(keys.clone());
+    state.controllers.borrow_mut().push(keys.upcast());
 
     let window_motion = gtk::EventControllerMotion::new();
     {
@@ -312,7 +394,8 @@ fn connect_actions(
             }
         });
     }
-    state.window.add_controller(window_motion);
+    state.window.add_controller(window_motion.clone());
+    state.controllers.borrow_mut().push(window_motion.upcast());
 
     {
         let window = state.window.clone();

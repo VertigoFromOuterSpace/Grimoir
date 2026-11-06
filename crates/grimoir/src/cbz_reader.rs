@@ -26,6 +26,8 @@ pub struct CbzReaderWindow {
     _state: Rc<CbzState>,
 }
 
+type BackHandler = Rc<dyn Fn()>;
+
 struct CbzState {
     window: gtk::ApplicationWindow,
     canvas: PageCanvas,
@@ -40,6 +42,8 @@ struct CbzState {
     bar_hovered: Cell<bool>,
     library: Option<Arc<Library>>,
     book_id: Option<i64>,
+    back: RefCell<Option<BackHandler>>,
+    controllers: RefCell<Vec<gtk::EventController>>,
 }
 
 impl CbzReaderWindow {
@@ -49,6 +53,40 @@ impl CbzReaderWindow {
         library: Option<Arc<Library>>,
         book_id: Option<i64>,
     ) -> Result<Self> {
+        Self::open_inner(app, path, library, book_id, None, None, None)
+    }
+
+    pub fn open_embedded(
+        app: &gtk::Application,
+        path: &Path,
+        library: Option<Arc<Library>>,
+        book_id: Option<i64>,
+        host: &gtk::ApplicationWindow,
+        container: &gtk::Box,
+        back: BackHandler,
+    ) -> Result<Self> {
+        Self::open_inner(
+            app,
+            path,
+            library,
+            book_id,
+            Some(host),
+            Some(container),
+            Some(back),
+        )
+    }
+
+    fn open_inner(
+        app: &gtk::Application,
+        path: &Path,
+        library: Option<Arc<Library>>,
+        book_id: Option<i64>,
+        host: Option<&gtk::ApplicationWindow>,
+        container: Option<&gtk::Box>,
+        back: Option<BackHandler>,
+    ) -> Result<Self> {
+        let embedded = host.is_some();
+        let back_mode = back.is_some();
         let file =
             File::open(path).with_context(|| format!("failed to open CBZ {}", path.display()))?;
         let mut archive = ZipArchive::new(file)
@@ -76,12 +114,17 @@ impl CbzReaderWindow {
                     .to_owned()
             });
 
-        let window = gtk::ApplicationWindow::builder()
-            .application(app)
-            .title(&title)
-            .decorated(false)
-            .build();
-        window.add_css_class("grimoir-reader");
+        let window = if let Some(host) = host {
+            host.clone()
+        } else {
+            let window = gtk::ApplicationWindow::builder()
+                .application(app)
+                .title(&title)
+                .decorated(false)
+                .build();
+            window.add_css_class("grimoir-reader");
+            window
+        };
 
         let (theme, _theme_path) = reader::load_initial_theme();
         let provider = gtk::CssProvider::new();
@@ -127,8 +170,16 @@ impl CbzReaderWindow {
         let fullscreen = gtk::Button::from_icon_name("view-fullscreen-symbolic");
         fullscreen.set_tooltip_text(Some("Toggle fullscreen (F)"));
         bar.append(&fullscreen);
-        let close = gtk::Button::from_icon_name("window-close-symbolic");
-        close.set_tooltip_text(Some("Close (Esc)"));
+        let close = gtk::Button::from_icon_name(if back_mode {
+            "go-previous-symbolic"
+        } else {
+            "window-close-symbolic"
+        });
+        close.set_tooltip_text(Some(if back_mode {
+            "Back to library (Esc)"
+        } else {
+            "Close (Esc)"
+        }));
         bar.append(&close);
 
         let bar_revealer = gtk::Revealer::new();
@@ -142,7 +193,11 @@ impl CbzReaderWindow {
         bar_revealer.set_margin_end(10);
         overlay.add_overlay(&bar_revealer);
 
-        window.set_child(Some(&overlay));
+        if let Some(container) = container {
+            container.append(&overlay);
+        } else {
+            window.set_child(Some(&overlay));
+        }
 
         let state = Rc::new(CbzState {
             window: window.clone(),
@@ -158,14 +213,18 @@ impl CbzReaderWindow {
             bar_hovered: Cell::new(false),
             library,
             book_id,
+            back: RefCell::new(back),
+            controllers: RefCell::new(Vec::new()),
         });
 
         show_page(&state, 0, false);
         update_label(&state);
 
         connect_actions(&state, &prev, &next, &fullscreen, &close, &bar);
-        window.present();
-        window.fullscreen();
+        if !embedded {
+            window.present();
+            window.fullscreen();
+        }
         show_bar(&state);
         Ok(Self {
             window,
@@ -175,6 +234,15 @@ impl CbzReaderWindow {
 
     pub fn window(&self) -> &gtk::ApplicationWindow {
         &self.window
+    }
+
+    pub fn shutdown(&self) {
+        if let Some(timer) = self._state.bar_timer.take() {
+            timer.remove();
+        }
+        for controller in self._state.controllers.borrow_mut().drain(..) {
+            self.window.remove_controller(&controller);
+        }
     }
 }
 
@@ -206,8 +274,14 @@ fn connect_actions(
         });
     }
     {
-        let window = state.window.clone();
-        close.connect_clicked(move |_| window.close());
+        let state = state.clone();
+        close.connect_clicked(move |_| {
+            if let Some(back) = state.back.borrow().as_ref() {
+                back();
+            } else {
+                state.window.close();
+            }
+        });
     }
 
     let bar_clone = bar.clone();
@@ -235,7 +309,8 @@ fn connect_actions(
             }
         });
     }
-    state.window.add_controller(window_motion);
+    state.window.add_controller(window_motion.clone());
+    state.controllers.borrow_mut().push(window_motion.upcast());
 
     let keys = gtk::EventControllerKey::new();
     {
@@ -257,13 +332,20 @@ fn connect_actions(
                         state.window.fullscreen();
                     }
                 }
-                gdk::Key::Escape => state.window.close(),
+                gdk::Key::Escape => {
+                    if let Some(back) = state.back.borrow().as_ref() {
+                        back();
+                    } else {
+                        state.window.close();
+                    }
+                }
                 _ => return glib::Propagation::Proceed,
             }
             glib::Propagation::Stop
         });
     }
-    state.window.add_controller(keys);
+    state.window.add_controller(keys.clone());
+    state.controllers.borrow_mut().push(keys.upcast());
 
     let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
     {
@@ -277,7 +359,8 @@ fn connect_actions(
             glib::Propagation::Stop
         });
     }
-    state.window.add_controller(scroll);
+    state.window.add_controller(scroll.clone());
+    state.controllers.borrow_mut().push(scroll.upcast());
 
     {
         let window = state.window.clone();

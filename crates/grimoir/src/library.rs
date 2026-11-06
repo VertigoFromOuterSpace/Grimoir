@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result};
@@ -65,8 +66,10 @@ impl ActiveReader {
     }
 
     fn shutdown(&self) {
-        if let Self::Pdf(reader) = self {
-            reader.shutdown();
+        match self {
+            Self::Pdf(reader) => reader.shutdown(),
+            Self::Cbz(reader) => reader.shutdown(),
+            Self::Epub(reader) => reader.shutdown(),
         }
     }
 }
@@ -103,6 +106,7 @@ struct LibraryState {
     last_signature: RefCell<String>,
     nav_signature: RefCell<String>,
     scanning: Cell<bool>,
+    scan_pause: Arc<AtomicBool>,
     watch_handle: RefCell<Option<WatchHandle>>,
     css_provider: gtk::CssProvider,
     theme_path: PathBuf,
@@ -364,6 +368,7 @@ impl LibraryWindow {
             selection_remove: selection_remove.clone(),
             nav_buttons: RefCell::new(Vec::new()),
             scanning: Cell::new(false),
+            scan_pause: Arc::new(AtomicBool::new(false)),
             cover_cache: RefCell::new(HashMap::new()),
             last_signature: RefCell::new(String::new()),
             nav_signature: RefCell::new(String::new()),
@@ -1510,6 +1515,153 @@ fn book_card(state: &Rc<LibraryState>, book: &Book, index: usize) -> gtk::Overla
     overlay
 }
 
+fn notify_user(summary: &str, body: &str) {
+    let _ = std::process::Command::new("notify-send")
+        .args(["--app-name=Grimoir", "--icon=grimoir", summary, body])
+        .spawn();
+}
+
+fn pause_scan_for_reading(state: &Rc<LibraryState>) {
+    if state.scanning.get() {
+        state.scan_pause.store(true, Ordering::Relaxed);
+        notify_user(
+            "Library scan paused",
+            "Scanning paused while a book is open.",
+        );
+    }
+}
+
+fn resume_scan_after_reading(state: &Rc<LibraryState>) {
+    state.scan_pause.store(false, Ordering::Relaxed);
+}
+
+fn back_to_catalog(state: &Rc<LibraryState>) -> Rc<dyn Fn()> {
+    let weak_state = Rc::downgrade(state);
+    Rc::new(move || {
+        if let Some(state) = weak_state.upgrade() {
+            state.stack.set_visible_child_name("catalog");
+            state.window.unfullscreen();
+            resume_scan_after_reading(&state);
+            let state = state.clone();
+            glib::idle_add_local_once(move || {
+                while let Some(child) = state.reader_host.first_child() {
+                    state.reader_host.remove(&child);
+                }
+                if let Some(reader) = state.active_reader.borrow_mut().take() {
+                    reader.shutdown();
+                }
+            });
+        }
+    })
+}
+
+fn finish_collection_change(state: &Rc<LibraryState>, message: &str) {
+    state.selection_mode.set(false);
+    state.selected.borrow_mut().clear();
+    state.last_signature.borrow_mut().clear();
+    refresh(state);
+    update_selection_bar(state);
+    state.status_label.set_text(message);
+}
+
+fn other_collections_for_books(
+    state: &Rc<LibraryState>,
+    ids: &[i64],
+    target_id: i64,
+) -> Vec<(i64, String)> {
+    let all = state.library.collections().unwrap_or_default();
+    let mut seen = HashSet::new();
+    let mut result = Vec::new();
+    for book_id in ids {
+        for collection_id in state
+            .library
+            .collections_for_book(*book_id)
+            .unwrap_or_default()
+        {
+            if collection_id != target_id
+                && seen.insert(collection_id)
+                && let Some(collection) = all.iter().find(|c| c.id == collection_id)
+            {
+                result.push((collection.id, collection.name.clone()));
+            }
+        }
+    }
+    result
+}
+
+fn apply_collection_target(
+    state: &Rc<LibraryState>,
+    target_id: i64,
+    target_name: &str,
+    ids: Vec<i64>,
+) {
+    let others = other_collections_for_books(state, &ids, target_id);
+    if others.is_empty() {
+        if let Err(error) = state.library.add_books_to_collection(&ids, target_id) {
+            state.status_label.set_text(&format!("{error:#}"));
+            return;
+        }
+        finish_collection_change(state, "Added to collection");
+        return;
+    }
+
+    let names = others
+        .iter()
+        .map(|(_, name)| name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let dialog = gtk::MessageDialog::builder()
+        .modal(true)
+        .transient_for(&state.window)
+        .text(format!("Move to “{target_name}”?"))
+        .secondary_text(format!(
+            "The selected books are also in: {names}.
+
+Choose whether to keep them there or move them exclusively."
+        ))
+        .build();
+    dialog.add_button("Move and remove from others", gtk::ResponseType::Yes);
+    dialog.add_button("Add (appear in more than one)", gtk::ResponseType::No);
+    dialog.add_button("Don't move", gtk::ResponseType::Cancel);
+    dialog.connect_response({
+        let state = state.clone();
+        let others = others.clone();
+        let ids = ids.clone();
+        move |dialog, response| {
+            dialog.close();
+            match response {
+                gtk::ResponseType::Yes => {
+                    for id in &ids {
+                        for (collection_id, _) in &others {
+                            if let Err(error) = state
+                                .library
+                                .remove_books_from_collection(&[*id], *collection_id)
+                            {
+                                state.status_label.set_text(&format!("{error:#}"));
+                                return;
+                            }
+                        }
+                    }
+                    if let Err(error) = state.library.add_books_to_collection(&ids, target_id) {
+                        state.status_label.set_text(&format!("{error:#}"));
+                        return;
+                    }
+                    finish_collection_change(&state, "Moved to collection");
+                }
+                gtk::ResponseType::No => {
+                    if let Err(error) = state.library.add_books_to_collection(&ids, target_id) {
+                        state.status_label.set_text(&format!("{error:#}"));
+                        return;
+                    }
+                    finish_collection_change(&state, "Added to collection");
+                }
+                _ => {}
+            }
+        }
+    });
+    dialog.present();
+}
+
 fn prompt_new_collection(state: &Rc<LibraryState>, after_ids: Option<Vec<i64>>) {
     show_text_prompt(
         state,
@@ -1518,22 +1670,15 @@ fn prompt_new_collection(state: &Rc<LibraryState>, after_ids: Option<Vec<i64>>) 
         "Create",
         move |state, name| match state.library.create_collection(name) {
             Ok(collection) => {
-                if let Some(ids) = &after_ids
-                    && let Err(error) = state.library.add_books_to_collection(ids, collection.id)
-                {
-                    state.status_label.set_text(&format!("{error:#}"));
-                    return;
-                }
                 state.nav_signature.borrow_mut().clear();
                 state.last_signature.borrow_mut().clear();
-                if after_ids.is_some() {
-                    state.selection_mode.set(false);
-                    state.selected.borrow_mut().clear();
-                }
                 refresh_nav(state);
                 refresh(state);
-                update_selection_bar(state);
-                state.status_label.set_text("Collection created");
+                if let Some(ids) = &after_ids {
+                    apply_collection_target(state, collection.id, &collection.name, ids.clone());
+                } else {
+                    state.status_label.set_text("Collection created");
+                }
             }
             Err(error) => state.status_label.set_text(&format!("{error:#}")),
         },
@@ -1582,18 +1727,10 @@ fn show_collection_picker(state: &Rc<LibraryState>, book_ids: Vec<i64>) {
             let state = state.clone();
             let ids = book_ids.clone();
             let window = window.clone();
+            let target_name = collection.name.clone();
             move |_| {
-                if let Err(error) = state.library.add_books_to_collection(&ids, collection.id) {
-                    state.status_label.set_text(&format!("{error:#}"));
-                    return;
-                }
                 window.close();
-                state.selection_mode.set(false);
-                state.selected.borrow_mut().clear();
-                state.last_signature.borrow_mut().clear();
-                refresh(&state);
-                update_selection_bar(&state);
-                state.status_label.set_text("Added to collection");
+                apply_collection_target(&state, collection.id, &target_name, ids.clone());
             }
         });
         body.append(&button);
@@ -1778,46 +1915,46 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
         return;
     }
     state.active_reader.borrow_mut().take();
+    let embedded = true;
+    if embedded {
+        pause_scan_for_reading(state);
+    }
     state.opening_book.set(true);
     state.status_label.set_text("Opening…");
 
     let state = state.clone();
     let book = book.clone();
     glib::timeout_add_local_once(Duration::from_millis(250), move || {
-        let embedded = !matches!(book.format.as_str(), "cbz" | "epub");
         let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             match book.format.as_str() {
-                "cbz" => CbzReaderWindow::open(
-                    &state.app,
-                    &book.path,
-                    Some(state.library.clone()),
-                    Some(book.id),
-                )
-                .map(ActiveReader::Cbz),
-                "epub" => EpubReaderWindow::open(
-                    &state.app,
-                    &book.path,
-                    Some(state.library.clone()),
-                    Some(book.id),
-                )
-                .map(ActiveReader::Epub),
+                "cbz" => {
+                    let back = back_to_catalog(&state);
+                    CbzReaderWindow::open_embedded(
+                        &state.app,
+                        &book.path,
+                        Some(state.library.clone()),
+                        Some(book.id),
+                        &state.window,
+                        &state.reader_host,
+                        back,
+                    )
+                    .map(ActiveReader::Cbz)
+                }
+                "epub" => {
+                    let back = back_to_catalog(&state);
+                    EpubReaderWindow::open_embedded(
+                        &state.app,
+                        &book.path,
+                        Some(state.library.clone()),
+                        Some(book.id),
+                        &state.window,
+                        &state.reader_host,
+                        back,
+                    )
+                    .map(ActiveReader::Epub)
+                }
                 _ => {
-                    let weak_state = Rc::downgrade(&state);
-                    let back: Rc<dyn Fn()> = Rc::new(move || {
-                        if let Some(state) = weak_state.upgrade() {
-                            state.stack.set_visible_child_name("catalog");
-                            state.window.unfullscreen();
-                            let state = state.clone();
-                            glib::idle_add_local_once(move || {
-                                while let Some(child) = state.reader_host.first_child() {
-                                    state.reader_host.remove(&child);
-                                }
-                                if let Some(reader) = state.active_reader.borrow_mut().take() {
-                                    reader.shutdown();
-                                }
-                            });
-                        }
-                    });
+                    let back = back_to_catalog(&state);
                     ReaderWindow::open_embedded(
                         &state.app,
                         &book.path,
@@ -1867,10 +2004,12 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
             }
             Ok(Err(error)) => {
                 state.opening_book.set(false);
+                resume_scan_after_reading(&state);
                 state.status_label.set_text(&format!("{error:#}"));
             }
             Err(payload) => {
                 state.opening_book.set(false);
+                resume_scan_after_reading(&state);
                 let message = payload
                     .downcast_ref::<&str>()
                     .copied()
@@ -2152,7 +2291,7 @@ fn start_scan(state: &Rc<LibraryState>) {
 
     state.status_label.set_text("Scanning library…");
     let (tx, rx) = async_channel::unbounded();
-    let _ = scan::spawn(state.library.clone(), roots, tx);
+    let _ = scan::spawn(state.library.clone(), roots, tx, state.scan_pause.clone());
     let weak = Rc::downgrade(state);
     glib::spawn_future_local(async move {
         while let Ok(event) = rx.recv().await {
