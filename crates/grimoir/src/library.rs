@@ -35,6 +35,22 @@ pub struct LibraryWindow {
     _state: Rc<LibraryState>,
 }
 
+enum ActiveReader {
+    Pdf(ReaderWindow),
+    Cbz(CbzReaderWindow),
+    Epub(EpubReaderWindow),
+}
+
+impl ActiveReader {
+    fn window(&self) -> &gtk::ApplicationWindow {
+        match self {
+            Self::Pdf(reader) => reader.window(),
+            Self::Cbz(reader) => reader.window(),
+            Self::Epub(reader) => reader.window(),
+        }
+    }
+}
+
 struct LibraryState {
     window: gtk::ApplicationWindow,
     app: gtk::Application,
@@ -61,7 +77,7 @@ struct LibraryState {
     theme_mtime: Cell<Option<SystemTime>>,
     theme_monitor: RefCell<Option<gio::FileMonitor>>,
     theme_source: Cell<Option<glib::SourceId>>,
-    active_reader: RefCell<Option<glib::WeakRef<gtk::ApplicationWindow>>>,
+    active_reader: RefCell<Option<ActiveReader>>,
 }
 
 impl LibraryWindow {
@@ -1124,15 +1140,14 @@ fn book_card(state: &Rc<LibraryState>, book: &Book, index: usize) -> gtk::Overla
 }
 
 fn open_book(state: &Rc<LibraryState>, book: &Book) {
-    if let Some(window) = state
-        .active_reader
-        .borrow()
-        .as_ref()
-        .and_then(|weak| weak.upgrade())
-    {
-        window.present();
-        return;
+    if let Some(reader) = state.active_reader.borrow().as_ref() {
+        let window = reader.window();
+        if window.is_visible() {
+            window.present();
+            return;
+        }
     }
+    state.active_reader.borrow_mut().take();
 
     let loading = gtk::Window::builder()
         .title("Opening book…")
@@ -1163,28 +1178,29 @@ fn open_book(state: &Rc<LibraryState>, book: &Book) {
                 Some(state.library.clone()),
                 Some(book.id),
             )
-            .map(|window| window.window().clone()),
+            .map(ActiveReader::Cbz),
             "epub" => EpubReaderWindow::open(
                 &state.app,
                 &book.path,
                 Some(state.library.clone()),
                 Some(book.id),
             )
-            .map(|window| window.window().clone()),
+            .map(ActiveReader::Epub),
             _ => ReaderWindow::open(
                 &state.app,
                 &book.path,
                 Some(state.library.clone()),
                 Some(book.id),
             )
-            .map(|window| window.window().clone()),
+            .map(ActiveReader::Pdf),
         };
         match opened {
-            Ok(reader_window) => {
+            Ok(reader) => {
+                let window = reader.window().clone();
+                *state.active_reader.borrow_mut() = Some(reader);
+                window.present();
+                window.fullscreen();
                 loading.close();
-                *state.active_reader.borrow_mut() = Some(reader_window.downgrade());
-                reader_window.present();
-                reader_window.fullscreen();
             }
             Err(error) => {
                 loading.close();
